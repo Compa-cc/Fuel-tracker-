@@ -2,7 +2,7 @@
 // Cambia este número cada vez que subas cambios a GitHub.
 // El SW detectará la nueva versión, descargará los archivos frescos
 // y notificará a la app para que se recargue automáticamente.
-const CACHE_VERSION = 'fuel-tracker-v2';
+const CACHE_VERSION = 'fuel-tracker-v3';
 
 const ASSETS = [
   './',
@@ -45,6 +45,12 @@ self.addEventListener('fetch', e => {
   if (e.request.method !== 'GET') return;
 
   const url = new URL(e.request.url);
+
+  // Overpass API y otros servicios externos de datos: siempre red, nunca caché
+  if (url.hostname.includes('overpass-api.de') || url.hostname.includes('overpass.kumi.systems')) {
+    return; // deja pasar sin interceptar
+  }
+
   const isHTML = e.request.destination === 'document' || url.pathname.endsWith('.html') || url.pathname === '/';
 
   if (isHTML) {
