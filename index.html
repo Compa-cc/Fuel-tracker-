@@ -614,32 +614,97 @@ function rNuevo() {
   detectSt();
 }
 
+// ── Haversine: distancia en metros entre dos coordenadas ──────────────────────
+function haversine(lat1, lon1, lat2, lon2) {
+  const R = 6371000;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180) * Math.cos(lat2*Math.PI/180) * Math.sin(dLon/2)**2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+
+function fmtDist(m) {
+  return m < 1000 ? Math.round(m) + ' m' : (m / 1000).toFixed(1) + ' km';
+}
+
 function detectSt() {
   document.getElementById('ls').textContent = 'Detectando tu ubicación GPS...';
-  document.getElementById('li').innerHTML = '<div class="ll">Buscando estaciones cercanas...</div>';
-  if (!navigator.geolocation) { showFavs(); return; }
+  document.getElementById('li').innerHTML = '<div class="ll">Obteniendo posición...</div>';
+  if (!navigator.geolocation) { showFavs('GPS no soportado en este dispositivo'); return; }
   navigator.geolocation.getCurrentPosition(
-    p => nearSt(p.coords.latitude, p.coords.longitude),
-    () => showFavs(),
-    { timeout: 8000, maximumAge: 60000 }
+    pos => {
+      document.getElementById('li').innerHTML = '<div class="ll">Buscando estaciones en OpenStreetMap...</div>';
+      buscarOverpass(pos.coords.latitude, pos.coords.longitude);
+    },
+    err => {
+      const msgs = { 1:'Permiso de ubicación denegado', 2:'Señal GPS no disponible', 3:'Tiempo agotado buscando GPS' };
+      showFavs(msgs[err.code] || 'GPS no disponible');
+    },
+    { timeout: 10000, maximumAge: 120000, enableHighAccuracy: true }
   );
 }
 
-function nearSt(lat, lng) {
-  document.getElementById('ls').textContent = 'Estaciones cercanas a tu ubicación';
-  const favs = [...new Set(tnk.map(t => t.estacion))];
-  const nearby = [
-    {name:'Terpel Av. 68', dist:'350m'},
-    {name:'Biomax Calle 72', dist:'680m'},
-    {name:'Primax Suba', dist:'1.2km'},
-    {name:'EDS Petrobras', dist:'1.8km'},
-  ].map(s => ({...s, fav: favs.includes(s.name)})).sort((a,b) => (b.fav?1:0) - (a.fav?1:0));
-  rLocI(nearby);
+async function buscarOverpass(lat, lng) {
+  // Radio de búsqueda: 2 km
+  const radio = 2000;
+  // Consulta Overpass: estaciones de servicio (fuel) y gasolineras
+  const query = `
+    [out:json][timeout:15];
+    (
+      node["amenity"="fuel"](around:${radio},${lat},${lng});
+      way["amenity"="fuel"](around:${radio},${lat},${lng});
+    );
+    out center 20;
+  `;
+  const url = 'https://overpass-api.de/api/interpreter';
+
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      body: query,
+      headers: { 'Content-Type': 'text/plain' }
+    });
+    if (!res.ok) throw new Error('Error Overpass');
+    const data = await res.json();
+
+    const favs = new Set(tnk.map(t => t.estacion));
+
+    const stations = data.elements
+      .map(el => {
+        const elLat = el.lat ?? el.center?.lat;
+        const elLon = el.lon ?? el.center?.lon;
+        if (!elLat || !elLon) return null;
+        const dist = haversine(lat, lng, elLat, elLon);
+        // Construir nombre: brand > name > operator > "Estación sin nombre"
+        const tags = el.tags || {};
+        const nombre = tags.brand || tags.name || tags.operator || 'Estación de servicio';
+        return { name: nombre, dist, fav: favs.has(nombre) };
+      })
+      .filter(Boolean)
+      .sort((a, b) => {
+        // Favoritas primero, luego por distancia
+        if (b.fav !== a.fav) return b.fav ? 1 : -1;
+        return a.dist - b.dist;
+      })
+      .slice(0, 8)
+      .map(s => ({ ...s, distLabel: fmtDist(s.dist) }));
+
+    if (!stations.length) {
+      showFavs('Sin estaciones en 2 km — mostrando favoritas');
+      return;
+    }
+
+    document.getElementById('ls').textContent = `${stations.length} estaciones cercanas · OpenStreetMap`;
+    rLocI(stations.map(s => ({ name: s.name, dist: s.distLabel, fav: s.fav })));
+
+  } catch (e) {
+    showFavs('Sin conexión — mostrando favoritas');
+  }
 }
 
-function showFavs() {
-  document.getElementById('ls').textContent = 'GPS no disponible — favoritas recientes';
-  const favs = [...new Set(tnk.map(t => t.estacion))].slice(0,5).map(n => ({name:n, fav:true}));
+function showFavs(reason = 'GPS no disponible — favoritas recientes') {
+  document.getElementById('ls').textContent = reason;
+  const favs = [...new Set(tnk.map(t => t.estacion))].slice(0, 6).map(n => ({ name: n, fav: true }));
   if (!favs.length) {
     document.getElementById('li').innerHTML = `<div style="padding:10px 12px;"><input type="text" class="fi fi-text" id="stm" placeholder="Nombre de la estación" oninput="selSt=this.value"></div>`;
     return;
